@@ -2,7 +2,7 @@
   "name": "jsonl-excel-viewer",
   "displayName": "JSONL Excel Viewer",
   "description": "View and edit JSONL (NDJSON) files in a spreadsheet-like UI",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "lab-bit",
   "license": "MIT",
   "icon": "media/icon.png",

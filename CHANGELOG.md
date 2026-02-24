@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- Extension package name finalized as `jsonl-excel-viewer` (NDJSON deprecated in favor of JSONL).
+
 ## 0.2.0 - Rename to JSONL Excel Viewer
 
 - **Breaking:** Extension renamed from "NDJSON Excel Viewer" to "JSONL Excel Viewer" (NDJSON was deprecated in 2023 in favor of JSONL).
