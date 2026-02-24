@@ -2,7 +2,7 @@
   "name": "ndjson-excel-viewer",
   "displayName": "NDJSON Excel Viewer",
   "description": "View and edit NDJSON/JSONL files in a spreadsheet-like UI",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "lab-bit",
   "license": "MIT",
   "icon": "media/icon.png",
