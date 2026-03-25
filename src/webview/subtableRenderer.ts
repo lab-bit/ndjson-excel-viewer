@@ -1,4 +1,12 @@
 import { createGrid, type GridApi, type GridOptions, type ColDef } from 'ag-grid-community';
+import { getCellWrapEnabled } from './cellWrapPreference';
+import { getMainMenuItemsWithSetColumnWidth } from './columnMenuWidth';
+import { clampAutosizedColumnWidths } from './columnWidthLimits';
+import {
+  SUBTABLE_PANEL_ROW_HEIGHT_DEFAULT_PX,
+  WRAP_CELL_SCROLL_CLASS,
+  WRAP_MODE_ROW_HEIGHT_PX,
+} from './wrapCellLayout';
 
 interface SubtableRecord {
   [key: string]: unknown;
@@ -6,8 +14,10 @@ interface SubtableRecord {
 
 type PanelMode = 'modal' | 'docked' | 'inline' | 'flat';
 
-let currentMode: PanelMode =
-  (localStorage.getItem('subtable-panel-mode') as PanelMode) || 'modal';
+let allowedModes: PanelMode[] = ['modal', 'docked', 'inline', 'flat'];
+let currentMode: PanelMode = normalizeMode(
+  (localStorage.getItem('subtable-panel-mode') as PanelMode) || 'modal'
+);
 let activeOverlay: HTMLElement | null = null;
 let activeDockedContainer: HTMLElement | null = null;
 let activePanelApi: GridApi | null = null;
@@ -46,6 +56,21 @@ export function setInlineToggleHandler(
   handler: (rowIndex: number, field: string, data: SubtableRecord[]) => void
 ): void {
   onInlineToggle = handler;
+}
+
+export function setAllowedPanelModes(options: {
+  allowInline: boolean;
+  allowFlat: boolean;
+}): void {
+  allowedModes = ['modal', 'docked'];
+  if (options.allowInline) {
+    allowedModes.push('inline');
+  }
+  if (options.allowFlat) {
+    allowedModes.push('flat');
+  }
+  currentMode = normalizeMode(currentMode);
+  localStorage.setItem('subtable-panel-mode', currentMode);
 }
 
 // Callback for flat detail toggle (provided by grid.ts via main.ts)
@@ -164,6 +189,7 @@ function toggleSubtablePanel(
   field: string,
   data: SubtableRecord[]
 ): void {
+  currentMode = normalizeMode(currentMode);
   const key = `${rowIndex}:${field}`;
 
   if (currentMode === 'flat') {
@@ -227,19 +253,27 @@ function buildPanelContent(
   autoSizeBtn.textContent = '\u2194'; // ↔
   autoSizeBtn.title = '\u5217\u5E45\u3092\u81EA\u52D5\u8ABF\u6574'; // 列幅を自動調整
   autoSizeBtn.addEventListener('click', () => {
-    activePanelApi?.autoSizeAllColumns();
+    if (!activePanelApi) return;
+    activePanelApi.autoSizeAllColumns();
+    clampAutosizedColumnWidths(activePanelApi);
   });
 
   // Mode toggle button (cycles: modal→docked→inline→modal)
   const modeBtn = document.createElement('button');
   modeBtn.className = 'subtable-expand-btn';
-  if (currentMode === 'modal') {
+  const nextMode = currentMode === 'modal' ? getNextMode('modal') : getNextMode('docked');
+  if (nextMode === 'docked') {
     modeBtn.textContent = '\u2B07'; // ⬇
     modeBtn.title = '\u30C9\u30C3\u30AD\u30F3\u30B0\u30E2\u30FC\u30C9\u306B\u5207\u66FF'; // ドッキングモードに切替
-  } else {
-    // docked → next is inline
+  } else if (nextMode === 'inline') {
     modeBtn.textContent = '\u2195'; // ↕
     modeBtn.title = '\u30A4\u30F3\u30E9\u30A4\u30F3\u30E2\u30FC\u30C9\u306B\u5207\u66FF'; // インラインモードに切替
+  } else if (nextMode === 'flat') {
+    modeBtn.textContent = '\u2B06'; // ⬆
+    modeBtn.title = '\u30D5\u30E9\u30C3\u30C8\u30E2\u30FC\u30C9\u306B\u5207\u66FF'; // フラットモードに切替
+  } else {
+    modeBtn.textContent = '\u25A1'; // □
+    modeBtn.title = '\u30E2\u30FC\u30C0\u30EB\u30E2\u30FC\u30C9\u306B\u5207\u66FF'; // モーダルモードに切替
   }
   modeBtn.addEventListener('click', switchMode);
 
@@ -282,6 +316,7 @@ function buildPanelContent(
     }
   }
 
+  const pw = getCellWrapEnabled();
   const colDefs: ColDef[] = [...allKeys].map((k) => ({
     field: k,
     headerName: k,
@@ -289,18 +324,28 @@ function buildPanelContent(
     resizable: true,
     sortable: true,
     minWidth: 80,
+    wrapText: pw,
+    autoHeight: false,
+    cellClass: pw ? WRAP_CELL_SCROLL_CLASS : undefined,
   }));
 
   const gridOptions: GridOptions = {
     columnDefs: colDefs,
     rowData: data.map((row, idx) => ({ ...row, __subIndex: idx })),
     domLayout: currentMode === 'docked' ? 'normal' : 'autoHeight',
+    rowHeight: pw ? WRAP_MODE_ROW_HEIGHT_PX : SUBTABLE_PANEL_ROW_HEIGHT_DEFAULT_PX,
     defaultColDef: {
       flex: 1,
       minWidth: 80,
+      wrapText: pw,
+      autoHeight: false,
     },
+    getMainMenuItems: getMainMenuItemsWithSetColumnWidth,
     autoSizeStrategy: {
       type: 'fitCellContents',
+    },
+    onFirstDataRendered: (e) => {
+      clampAutosizedColumnWidths(e.api);
     },
     onCellValueChanged: (event) => {
       if (onSubtableEdit && event.colDef.field && event.colDef.field !== '__subIndex') {
@@ -322,11 +367,8 @@ function openAsModal(
   key: string
 ): void {
   const switchMode = () => {
-    // modal → docked
     closeActivePanel();
-    currentMode = 'docked';
-    localStorage.setItem('subtable-panel-mode', currentMode);
-    openAsDocked(rowIndex, field, data, key);
+    switchModeFromPanel('modal', rowIndex, field, data, key);
   };
 
   const { panel, gridDiv, gridOptions } = buildPanelContent(
@@ -365,11 +407,8 @@ function openAsDocked(
   key: string
 ): void {
   const switchMode = () => {
-    // docked → inline
     closeActivePanel();
-    currentMode = 'inline';
-    localStorage.setItem('subtable-panel-mode', currentMode);
-    onInlineToggle?.(rowIndex, field, data);
+    switchModeFromPanel('docked', rowIndex, field, data, key);
   };
 
   const { panel, gridDiv, gridOptions } = buildPanelContent(
@@ -408,7 +447,7 @@ export function switchAndOpen(
   field: string,
   data: SubtableRecord[]
 ): void {
-  currentMode = mode;
+  currentMode = normalizeMode(mode);
   localStorage.setItem('subtable-panel-mode', currentMode);
   const key = `${rowIndex}:${field}`;
   if (mode === 'modal') {
@@ -418,6 +457,75 @@ export function switchAndOpen(
   }
 }
 
+export function refreshActivePanelCellWrap(): void {
+  if (!activePanelApi) return;
+  const w = getCellWrapEnabled();
+  activePanelApi.setGridOption(
+    'rowHeight',
+    w ? WRAP_MODE_ROW_HEIGHT_PX : SUBTABLE_PANEL_ROW_HEIGHT_DEFAULT_PX
+  );
+  activePanelApi.setGridOption('defaultColDef', {
+    flex: 1,
+    minWidth: 80,
+    wrapText: w,
+    autoHeight: false,
+  });
+  const defs = activePanelApi.getColumnDefs();
+  if (defs) {
+    activePanelApi.setGridOption(
+      'columnDefs',
+      defs.map((d) => ({
+        ...d,
+        wrapText: w,
+        autoHeight: false,
+        cellClass: w ? WRAP_CELL_SCROLL_CLASS : undefined,
+      }))
+    );
+  }
+  activePanelApi.resetRowHeights();
+}
+
+export function autoSizeClampActiveSubtablePanel(): void {
+  if (!activePanelApi) return;
+  activePanelApi.autoSizeAllColumns();
+  clampAutosizedColumnWidths(activePanelApi);
+}
+
 export function closeSubtablePanel(): void {
   closeActivePanel();
+}
+
+function normalizeMode(mode: PanelMode): PanelMode {
+  return allowedModes.includes(mode) ? mode : 'modal';
+}
+
+function getNextMode(mode: 'modal' | 'docked'): PanelMode {
+  const currentIndex = allowedModes.indexOf(mode);
+  const nextIndex = (currentIndex + 1) % allowedModes.length;
+  return allowedModes[nextIndex];
+}
+
+function switchModeFromPanel(
+  mode: 'modal' | 'docked',
+  rowIndex: number,
+  field: string,
+  data: SubtableRecord[],
+  key: string
+): void {
+  currentMode = getNextMode(mode);
+  localStorage.setItem('subtable-panel-mode', currentMode);
+
+  if (currentMode === 'modal') {
+    openAsModal(rowIndex, field, data, key);
+    return;
+  }
+  if (currentMode === 'docked') {
+    openAsDocked(rowIndex, field, data, key);
+    return;
+  }
+  if (currentMode === 'inline') {
+    onInlineToggle?.(rowIndex, field, data);
+    return;
+  }
+  onFlatToggle?.(rowIndex, field, data);
 }

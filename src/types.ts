@@ -34,15 +34,49 @@ export interface CellEdit {
   newValue: unknown;
 }
 
+export interface GridStats {
+  fileSizeBytes: number;
+  totalRows: number;
+  totalColumns: number;
+}
+
+export interface SearchMatch {
+  rowIndex: number;
+  colId: string;
+}
+
+export interface SearchResultSummary {
+  query: string;
+  totalMatches: number;
+  currentMatchIndex: number;
+}
+
 /** Messages from Extension Host to Webview */
 export type ExtToWebviewMessage =
-  | { type: 'init'; columns: ColumnDef[]; totalRows: number }
-  | { type: 'data-chunk'; startIndex: number; rows: JsonlRecord[] }
+  | {
+      type: 'init';
+      columns: ColumnDef[];
+      totalRows: number;
+      largeFileMode: boolean;
+      stats: GridStats;
+    }
+  | {
+      type: 'rows-range';
+      requestId: number;
+      startRow: number;
+      endRow: number;
+      rows: JsonlRecord[];
+      lastRow: number;
+    }
   | { type: 'apply-edit'; edit: CellEdit }
+  | { type: 'search-result'; result: SearchResultSummary }
+  | { type: 'focus-match'; match: SearchMatch }
   | { type: 'theme-changed'; theme: string };
 
 /** Messages from Webview to Extension Host */
 export type WebviewToExtMessage =
   | { type: 'ready' }
   | { type: 'cell-edit'; edit: CellEdit }
-  | { type: 'request-chunk'; startIndex: number; count: number };
+  | { type: 'request-rows'; requestId: number; startRow: number; endRow: number }
+  | { type: 'search-query'; query: string }
+  | { type: 'search-step'; direction: 'next' | 'prev' };

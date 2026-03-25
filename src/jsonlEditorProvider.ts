@@ -1,9 +1,12 @@
 import * as vscode from 'vscode';
 import { JsonlDocument } from './jsonlDocument';
 import { analyzeColumns } from './columnAnalyzer';
-import { ColumnDef, JsonlRecord, WebviewToExtMessage } from './types';
-
-const CHUNK_SIZE = 500;
+import {
+  GridStats,
+  SearchMatch,
+  WebviewToExtMessage,
+} from './types';
+import { shouldEnableLargeFileMode } from './largeFileMode';
 
 export class JsonlEditorProvider
   implements vscode.CustomEditorProvider<JsonlDocument>
@@ -41,6 +44,35 @@ export class JsonlEditorProvider
     webviewPanel: vscode.WebviewPanel,
     _token: vscode.CancellationToken
   ): Promise<void> {
+    let activeSearchQuery = '';
+    let activeSearchMatches: SearchMatch[] = [];
+    let activeSearchIndex = -1;
+
+    const updateSearch = () => {
+      if (activeSearchQuery === '') {
+        activeSearchMatches = [];
+        activeSearchIndex = -1;
+        webviewPanel.webview.postMessage({
+          type: 'search-result',
+          result: {
+            query: '',
+            totalMatches: 0,
+            currentMatchIndex: -1,
+          },
+        });
+        return;
+      }
+
+      activeSearchMatches = document.search(activeSearchQuery);
+      activeSearchIndex = activeSearchMatches.length > 0 ? 0 : -1;
+      this._postSearchState(
+        webviewPanel.webview,
+        activeSearchQuery,
+        activeSearchMatches,
+        activeSearchIndex
+      );
+    };
+
     webviewPanel.webview.options = {
       enableScripts: true,
       localResourceRoots: [
@@ -63,21 +95,81 @@ export class JsonlEditorProvider
           case 'cell-edit':
             document.applyEdit(message.edit);
             break;
-          case 'request-chunk':
-            this._sendChunk(
+          case 'request-rows':
+            this._sendRowsRange(
               webviewPanel.webview,
               document,
-              message.startIndex,
-              message.count
+              message.requestId,
+              message.startRow,
+              message.endRow
+            );
+            break;
+          case 'search-query':
+            activeSearchQuery = message.query.trim();
+            updateSearch();
+            break;
+          case 'search-step':
+            if (activeSearchMatches.length === 0) {
+              this._postSearchState(
+                webviewPanel.webview,
+                activeSearchQuery,
+                activeSearchMatches,
+                activeSearchIndex
+              );
+              break;
+            }
+            activeSearchIndex =
+              message.direction === 'next'
+                ? (activeSearchIndex + 1) % activeSearchMatches.length
+                : (activeSearchIndex - 1 + activeSearchMatches.length) %
+                  activeSearchMatches.length;
+            this._postSearchState(
+              webviewPanel.webview,
+              activeSearchQuery,
+              activeSearchMatches,
+              activeSearchIndex
             );
             break;
         }
       }
     );
 
-    // Resend data when content changes (undo/redo)
-    document.onDidChangeContent(() => {
-      this._sendInitData(webviewPanel.webview, document);
+    document.onDidChangeContent((event) => {
+      if (event.type === 'reload') {
+        this._sendInitData(webviewPanel.webview, document);
+        updateSearch();
+        return;
+      }
+
+      if (event.source !== 'local') {
+        webviewPanel.webview.postMessage({
+          type: 'apply-edit',
+          edit: event.edit,
+        });
+      }
+
+      if (activeSearchQuery !== '') {
+        const previousMatch = activeSearchMatches[activeSearchIndex];
+        activeSearchMatches = document.search(activeSearchQuery);
+        if (activeSearchMatches.length === 0) {
+          activeSearchIndex = -1;
+        } else if (previousMatch) {
+          const nextIndex = activeSearchMatches.findIndex(
+            (match) =>
+              match.rowIndex === previousMatch.rowIndex &&
+              match.colId === previousMatch.colId
+          );
+          activeSearchIndex = nextIndex >= 0 ? nextIndex : 0;
+        } else {
+          activeSearchIndex = 0;
+        }
+        this._postSearchState(
+          webviewPanel.webview,
+          activeSearchQuery,
+          activeSearchMatches,
+          activeSearchIndex
+        );
+      }
     });
 
     // Theme change listener
@@ -129,31 +221,63 @@ export class JsonlEditorProvider
   ): void {
     const records = document.records;
     const columns = analyzeColumns(records);
+    const stats: GridStats = {
+      fileSizeBytes: document.fileSizeBytes,
+      totalRows: records.length,
+      totalColumns: columns.length,
+    };
+    const largeFileMode = shouldEnableLargeFileMode(stats);
 
-    // Send init message with columns and total rows
     webview.postMessage({
       type: 'init',
       columns,
       totalRows: records.length,
+      largeFileMode,
+      stats,
     });
-
-    // Send first chunk
-    this._sendChunk(webview, document, 0, CHUNK_SIZE);
   }
 
-  private _sendChunk(
+  private _sendRowsRange(
     webview: vscode.Webview,
     document: JsonlDocument,
-    startIndex: number,
-    count: number
+    requestId: number,
+    startRow: number,
+    endRow: number
   ): void {
-    const records = document.records;
-    const chunk = records.slice(startIndex, startIndex + count);
+    const safeStart = Math.max(0, startRow);
+    const safeEnd = Math.max(safeStart, endRow);
+    const rows = document.getRowsRange(safeStart, safeEnd);
     webview.postMessage({
-      type: 'data-chunk',
-      startIndex,
-      rows: chunk,
+      type: 'rows-range',
+      requestId,
+      startRow: safeStart,
+      endRow: safeEnd,
+      rows,
+      lastRow: document.records.length,
     });
+  }
+
+  private _postSearchState(
+    webview: vscode.Webview,
+    query: string,
+    matches: SearchMatch[],
+    currentIndex: number
+  ): void {
+    webview.postMessage({
+      type: 'search-result',
+      result: {
+        query,
+        totalMatches: matches.length,
+        currentMatchIndex: currentIndex,
+      },
+    });
+
+    if (currentIndex >= 0 && currentIndex < matches.length) {
+      webview.postMessage({
+        type: 'focus-match',
+        match: matches[currentIndex],
+      });
+    }
   }
 
   private _getHtmlForWebview(webview: vscode.Webview): string {
@@ -188,12 +312,32 @@ export class JsonlEditorProvider
       <button id="search-next" title="Next">&#9660;</button>
     </div>
     <div id="info-bar">
+      <div id="grid-menu-wrap">
+        <button id="grid-menu-btn" type="button" title="Grid options">Menu</button>
+        <div id="grid-menu-dropdown" class="grid-menu-dropdown" aria-hidden="true">
+          <label class="grid-menu-item">
+            <input type="checkbox" id="grid-wrap-text" checked />
+            <span>Wrap text</span>
+          </label>
+          <label class="grid-menu-item">
+            <input type="checkbox" id="grid-show-line-numbers" checked />
+            <span>Show line numbers</span>
+          </label>
+          <div class="grid-menu-section">
+            <button type="button" id="grid-menu-inline-all" class="grid-menu-action-btn">
+              Inline All
+            </button>
+            <button type="button" id="grid-menu-flat-all" class="grid-menu-action-btn">
+              Flat All
+            </button>
+          </div>
+        </div>
+      </div>
       <div id="column-picker-wrap">
         <button id="column-picker-btn" title="Select columns to display">Columns</button>
         <div id="column-picker-dropdown" class="column-picker-dropdown" aria-hidden="true"></div>
       </div>
-      <button id="inline-expand-all" title="Expand all subtables inline">Inline All</button>
-      <button id="flat-expand-all" title="Expand all subtables flat">Flat All</button>
+      <span id="mode-indicator" hidden></span>
       <span id="row-count"></span>
       <span id="col-count"></span>
     </div>

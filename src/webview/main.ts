@@ -1,11 +1,50 @@
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
 
-import type { ExtToWebviewMessage, WebviewToExtMessage, CellEdit, ColumnDef } from '../types';
-import { initGrid, setRowData, resetData, updateInfoBar, getGridApi, toggleInlineDetail, toggleFlatDetail, getSubtableData, toggleInlineExpandAll, toggleFlatExpandAll, setDetailSwitchHandler, getVisibleColumnFields, setColumnVisibility, setAllColumnsVisible, setAllColumnsHidden, resetColumnVisibility, isColumnVisible } from './grid';
+import type {
+  ExtToWebviewMessage,
+  WebviewToExtMessage,
+  CellEdit,
+  ColumnDef,
+  GridStats,
+} from '../types';
+import { getCellWrapEnabled } from './cellWrapPreference';
+import { getLineNumbersEnabled } from './lineNumberPreference';
+import {
+  initGrid,
+  setRowData,
+  resetData,
+  updateInfoBar,
+  toggleInlineDetail,
+  toggleFlatDetail,
+  getSubtableData,
+  toggleInlineExpandAll,
+  toggleFlatExpandAll,
+  setDetailSwitchHandler,
+  resolveRowsRequest,
+  applyGridEdit,
+  focusMatch,
+  destroyGrid,
+  getVisibleColumnFields,
+  setColumnVisibility,
+  setAllColumnsVisible,
+  setAllColumnsHidden,
+  resetColumnVisibility,
+  isColumnVisible,
+  setCellWrapEnabled,
+  setLineNumbersVisible,
+} from './grid';
 import { applyTheme, observeThemeChanges } from './theme';
 import { SearchController } from './search';
-import { setSubtableEditHandler, closeSubtablePanel, setInlineToggleHandler, setFlatToggleHandler, setFlatModeSwitchHandler, switchAndOpen } from './subtableRenderer';
+import {
+  setSubtableEditHandler,
+  closeSubtablePanel,
+  setInlineToggleHandler,
+  setFlatToggleHandler,
+  setFlatModeSwitchHandler,
+  switchAndOpen,
+  setAllowedPanelModes,
+} from './subtableRenderer';
 
 declare function acquireVsCodeApi(): {
   postMessage(message: WebviewToExtMessage): void;
@@ -16,75 +55,111 @@ declare function acquireVsCodeApi(): {
 const vscode = acquireVsCodeApi();
 const gridContainer = document.getElementById('grid-container')!;
 
+type WebviewUiState = { cellWrap?: boolean; showLineNumbers?: boolean };
+
+function readWebviewUiState(): WebviewUiState {
+  const s = vscode.getState();
+  if (s != null && typeof s === 'object' && !Array.isArray(s)) {
+    return s as WebviewUiState;
+  }
+  return {};
+}
+
+function writeWebviewUiState(partial: WebviewUiState): void {
+  vscode.setState({ ...readWebviewUiState(), ...partial });
+}
+
+function syncGridWrapCheckbox(checked: boolean): void {
+  const el = document.getElementById('grid-wrap-text') as HTMLInputElement | null;
+  if (el) el.checked = checked;
+}
+
+function syncGridLineNumbersCheckbox(checked: boolean): void {
+  const el = document.getElementById('grid-show-line-numbers') as HTMLInputElement | null;
+  if (el) el.checked = checked;
+}
+
+function hasSubtableColumns(): boolean {
+  return columns.some((c) => c.isSubtable);
+}
+
+const NORMAL_CHUNK_SIZE = 500;
+
 let searchController: SearchController;
 let totalRows = 0;
 let columns: ColumnDef[] = [];
-let initialized = false;
-const CHUNK_SIZE = 500;
+let largeFileMode = false;
+let currentStats: GridStats | null = null;
 
-// Apply theme
 applyTheme(gridContainer);
 observeThemeChanges(gridContainer);
 
-// Initialize search
-searchController = new SearchController();
+searchController = new SearchController(
+  (query) => {
+    vscode.postMessage({ type: 'search-query', query });
+  },
+  (direction) => {
+    vscode.postMessage({ type: 'search-step', direction });
+  }
+);
 
-// Wire inline expand-all button
-const inlineExpandAllBtn = document.getElementById('inline-expand-all');
-if (inlineExpandAllBtn) {
-  inlineExpandAllBtn.addEventListener('click', () => {
+const gridMenuInlineAll = document.getElementById(
+  'grid-menu-inline-all'
+) as HTMLButtonElement | null;
+const gridMenuFlatAll = document.getElementById(
+  'grid-menu-flat-all'
+) as HTMLButtonElement | null;
+
+if (gridMenuInlineAll) {
+  gridMenuInlineAll.addEventListener('click', () => {
+    if (gridMenuInlineAll.disabled) return;
     const expanded = toggleInlineExpandAll();
-    inlineExpandAllBtn.textContent = expanded ? 'Collapse All' : 'Inline All';
-    inlineExpandAllBtn.title = expanded ? 'Collapse all inline expansions' : 'Expand all subtables inline';
-    // Reset flat button state if it was active
-    const flatBtn = document.getElementById('flat-expand-all');
-    if (flatBtn) {
-      flatBtn.textContent = 'Flat All';
-      flatBtn.title = 'Expand all subtables flat';
+    gridMenuInlineAll.textContent = expanded ? 'Collapse All' : 'Inline All';
+    gridMenuInlineAll.title = expanded
+      ? 'Collapse all inline expansions'
+      : 'Expand all subtables inline';
+    if (gridMenuFlatAll) {
+      gridMenuFlatAll.textContent = 'Flat All';
+      gridMenuFlatAll.title = 'Expand all subtables flat';
     }
   });
 }
 
-// Wire flat expand-all button
-const flatExpandAllBtn = document.getElementById('flat-expand-all');
-if (flatExpandAllBtn) {
-  flatExpandAllBtn.addEventListener('click', () => {
+if (gridMenuFlatAll) {
+  gridMenuFlatAll.addEventListener('click', () => {
+    if (gridMenuFlatAll.disabled) return;
     const expanded = toggleFlatExpandAll();
-    flatExpandAllBtn.textContent = expanded ? 'Collapse All' : 'Flat All';
-    flatExpandAllBtn.title = expanded ? 'Collapse all flat expansions' : 'Expand all subtables flat';
-    // Reset inline button state if it was active
-    const inlineBtn = document.getElementById('inline-expand-all');
-    if (inlineBtn) {
-      inlineBtn.textContent = 'Inline All';
-      inlineBtn.title = 'Expand all subtables inline';
+    gridMenuFlatAll.textContent = expanded ? 'Collapse All' : 'Flat All';
+    gridMenuFlatAll.title = expanded
+      ? 'Collapse all flat expansions'
+      : 'Expand all subtables flat';
+    if (gridMenuInlineAll) {
+      gridMenuInlineAll.textContent = 'Inline All';
+      gridMenuInlineAll.title = 'Expand all subtables inline';
     }
   });
 }
 
-// Wire inline detail toggle: subtableRenderer → grid
 setInlineToggleHandler(toggleInlineDetail);
-
-// Wire flat detail toggle: subtableRenderer → grid
 setFlatToggleHandler(toggleFlatDetail);
 
-// Wire flat mode switch: flat row → modal
 setFlatModeSwitchHandler((parentIndex, field, targetMode) => {
-  toggleFlatDetail(parentIndex, field, []); // close flat
+  toggleFlatDetail(parentIndex, field, []);
   const data = getSubtableData(parentIndex, field);
-  if (data) switchAndOpen(targetMode as 'modal' | 'docked', parentIndex, field, data);
+  if (data) {
+    switchAndOpen(targetMode as 'modal' | 'docked', parentIndex, field, data);
+  }
 });
 
-// Wire mode switch from inline detail row back to modal/docked/flat
 setDetailSwitchHandler((targetMode, rowIndex, field, data) => {
-  toggleInlineDetail(rowIndex, field, data); // collapse inline
+  toggleInlineDetail(rowIndex, field, data);
   if (targetMode === 'flat') {
-    toggleFlatDetail(rowIndex, field, data); // open flat
+    toggleFlatDetail(rowIndex, field, data);
   } else {
     switchAndOpen(targetMode as 'modal' | 'docked', rowIndex, field, data);
   }
 });
 
-// Set up subtable edit handler
 setSubtableEditHandler((rowIndex, field, subIndex, subField, oldValue, newValue) => {
   vscode.postMessage({
     type: 'cell-edit',
@@ -97,10 +172,72 @@ setSubtableEditHandler((rowIndex, field, subIndex, subField, oldValue, newValue)
   });
 });
 
-// --- Column picker ---
-
 function refreshInfoBar(): void {
   updateInfoBar(totalRows, columns.length, getVisibleColumnFields().length);
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function updateModeIndicator(): void {
+  const indicator = document.getElementById('mode-indicator');
+  if (!indicator) return;
+
+  if (!largeFileMode || !currentStats) {
+    indicator.setAttribute('hidden', 'true');
+    indicator.textContent = '';
+    indicator.removeAttribute('title');
+    return;
+  }
+
+  indicator.removeAttribute('hidden');
+  indicator.textContent = 'Large file mode';
+  indicator.setAttribute(
+    'title',
+    `${formatBytes(currentStats.fileSizeBytes)} / ${currentStats.totalRows} rows / ${currentStats.totalColumns} cols. Inline/Flat bulk expansion is disabled.`
+  );
+}
+
+function updateGridMenuBulkActions(): void {
+  const largeFileTitle =
+    'Disabled in large file mode to keep scrolling and rendering responsive';
+  const noSubtableTitle = 'No subtable columns in this file';
+  const hasSub = hasSubtableColumns();
+  const canUse = !largeFileMode && hasSub;
+
+  if (gridMenuInlineAll) {
+    gridMenuInlineAll.textContent = 'Inline All';
+    gridMenuInlineAll.disabled = !canUse;
+    gridMenuInlineAll.title = largeFileMode
+      ? largeFileTitle
+      : !hasSub
+        ? noSubtableTitle
+        : 'Expand all subtables inline';
+  }
+
+  if (gridMenuFlatAll) {
+    gridMenuFlatAll.textContent = 'Flat All';
+    gridMenuFlatAll.disabled = !canUse;
+    gridMenuFlatAll.title = largeFileMode
+      ? largeFileTitle
+      : !hasSub
+        ? noSubtableTitle
+        : 'Expand all subtables flat';
+  }
+}
+
+function requestClientChunk(startRow: number): void {
+  const endRow = Math.min(startRow + NORMAL_CHUNK_SIZE, totalRows);
+  if (startRow >= endRow) return;
+  vscode.postMessage({
+    type: 'request-rows',
+    requestId: 0,
+    startRow,
+    endRow,
+  });
 }
 
 function buildColumnPickerContent(): void {
@@ -136,7 +273,8 @@ function buildColumnPickerContent(): void {
   clearSelectionBtn.type = 'button';
   clearSelectionBtn.textContent = 'Clear selection';
   clearSelectionBtn.className = 'column-picker-action-btn';
-  clearSelectionBtn.title = 'Uncheck all columns so you can select only the ones to show';
+  clearSelectionBtn.title =
+    'Uncheck all columns so you can select only the ones to show';
   clearSelectionBtn.addEventListener('click', () => {
     setAllColumnsHidden();
     refreshInfoBar();
@@ -199,7 +337,112 @@ if (columnPickerBtn) {
   });
 }
 
-// Handle messages from Extension Host
+function closeGridMenu(): void {
+  const dropdown = document.getElementById('grid-menu-dropdown');
+  if (dropdown) {
+    dropdown.classList.remove('grid-menu-open');
+    dropdown.setAttribute('aria-hidden', 'true');
+  }
+}
+
+function toggleGridMenu(): void {
+  const dropdown = document.getElementById('grid-menu-dropdown');
+  const btn = document.getElementById('grid-menu-btn');
+  if (!dropdown || !btn) return;
+  const isOpen = dropdown.classList.contains('grid-menu-open');
+  if (isOpen) {
+    closeGridMenu();
+    return;
+  }
+  syncGridWrapCheckbox(getCellWrapEnabled());
+  syncGridLineNumbersCheckbox(getLineNumbersEnabled());
+  dropdown.classList.add('grid-menu-open');
+  dropdown.setAttribute('aria-hidden', 'false');
+  setTimeout(() => {
+    const onOutside = (e: MouseEvent) => {
+      const wrap = document.getElementById('grid-menu-wrap');
+      if (wrap && !wrap.contains(e.target as Node)) {
+        closeGridMenu();
+        document.removeEventListener('click', onOutside);
+      }
+    };
+    document.addEventListener('click', onOutside);
+  }, 0);
+}
+
+const gridMenuBtn = document.getElementById('grid-menu-btn');
+if (gridMenuBtn) {
+  gridMenuBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleGridMenu();
+  });
+}
+
+const gridWrapText = document.getElementById('grid-wrap-text') as HTMLInputElement | null;
+if (gridWrapText) {
+  gridWrapText.addEventListener('change', () => {
+    const enabled = gridWrapText.checked;
+    writeWebviewUiState({ cellWrap: enabled });
+    setCellWrapEnabled(enabled);
+  });
+}
+
+const gridShowLineNumbers = document.getElementById(
+  'grid-show-line-numbers'
+) as HTMLInputElement | null;
+if (gridShowLineNumbers) {
+  gridShowLineNumbers.addEventListener('change', () => {
+    const visible = gridShowLineNumbers.checked;
+    writeWebviewUiState({ showLineNumbers: visible });
+    setLineNumbersVisible(visible);
+  });
+}
+
+function recreateGrid(): void {
+  destroyGrid();
+  resetData();
+  closeSubtablePanel();
+  gridContainer.innerHTML = '';
+
+  const ui = readWebviewUiState();
+  const initialCellWrap = ui.cellWrap !== false;
+  const initialShowLineNumbers = ui.showLineNumbers !== false;
+
+  const api = initGrid(
+    gridContainer,
+    columns,
+    (edit: CellEdit) => {
+      vscode.postMessage({ type: 'cell-edit', edit });
+    },
+    {
+      initialHiddenFields: [],
+      initialCellWrap,
+      initialShowLineNumbers,
+      largeFileMode,
+      onRequestRows: (requestId, startRow, endRow) => {
+        vscode.postMessage({
+          type: 'request-rows',
+          requestId,
+          startRow,
+          endRow,
+        });
+      },
+    }
+  );
+  syncGridWrapCheckbox(initialCellWrap);
+  syncGridLineNumbersCheckbox(initialShowLineNumbers);
+  searchController.setGridApi(api);
+  searchController.setLargeFileMode(largeFileMode);
+  setAllowedPanelModes({
+    allowInline: !largeFileMode,
+    allowFlat: !largeFileMode,
+  });
+
+  if (!largeFileMode) {
+    requestClientChunk(0);
+  }
+}
+
 window.addEventListener('message', (event) => {
   const message = event.data as ExtToWebviewMessage;
 
@@ -207,47 +450,41 @@ window.addEventListener('message', (event) => {
     case 'init': {
       columns = message.columns;
       totalRows = message.totalRows;
+      largeFileMode = message.largeFileMode;
+      currentStats = message.stats;
 
-      if (!initialized) {
-        resetData();
-        const api = initGrid(gridContainer, columns, (edit: CellEdit) => {
-          vscode.postMessage({ type: 'cell-edit', edit });
-        }, []);
-        searchController.setGridApi(api);
-        initialized = true;
-      } else {
-        // Re-init on content change (undo/redo)
-        resetData();
-        closeSubtablePanel();
-      }
-      updateInfoBar(totalRows, columns.length, getVisibleColumnFields().length);
+      recreateGrid();
+      updateModeIndicator();
+      updateGridMenuBulkActions();
+      refreshInfoBar();
       break;
     }
 
-    case 'data-chunk': {
-      setRowData(message.rows, message.startIndex);
-
-      // Request next chunk if more data is available
-      const nextStart = message.startIndex + message.rows.length;
-      if (nextStart < totalRows) {
-        vscode.postMessage({
-          type: 'request-chunk',
-          startIndex: nextStart,
-          count: CHUNK_SIZE,
-        });
+    case 'rows-range': {
+      if (largeFileMode) {
+        resolveRowsRequest(message.requestId, message.rows, message.lastRow);
+      } else {
+        setRowData(message.rows, message.startRow);
+        const nextStart = message.endRow;
+        if (nextStart < totalRows) {
+          requestClientChunk(nextStart);
+        }
       }
       break;
     }
 
     case 'apply-edit': {
-      const api = getGridApi();
-      if (api) {
-        const edit = message.edit;
-        const rowNode = api.getRowNode(String(edit.rowIndex));
-        if (rowNode) {
-          rowNode.setDataValue(edit.field, edit.newValue);
-        }
-      }
+      applyGridEdit(message.edit);
+      break;
+    }
+
+    case 'search-result': {
+      searchController.applyRemoteResult(message.result);
+      break;
+    }
+
+    case 'focus-match': {
+      focusMatch(message.match);
       break;
     }
 
@@ -258,5 +495,4 @@ window.addEventListener('message', (event) => {
   }
 });
 
-// Signal ready
 vscode.postMessage({ type: 'ready' });

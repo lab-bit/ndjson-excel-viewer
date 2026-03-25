@@ -93,8 +93,25 @@ html, body {
   color: var(--text-muted);
 }
 
-#inline-expand-all,
-#flat-expand-all {
+#mode-indicator {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--toolbar-border);
+  border-radius: 999px;
+  color: var(--text-fg);
+  background: var(--vscode-badge-background, rgba(127, 127, 127, 0.12));
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* Column picker */
+#grid-menu-wrap {
+  position: relative;
+}
+
+#grid-menu-btn {
   height: 22px;
   padding: 0 6px;
   background: var(--button-bg);
@@ -109,12 +126,76 @@ html, body {
   white-space: nowrap;
 }
 
-#inline-expand-all:hover,
-#flat-expand-all:hover {
+#grid-menu-btn:hover {
   background: var(--button-hover-bg);
 }
 
-/* Column picker */
+.grid-menu-dropdown {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 2px;
+  min-width: 200px;
+  padding: 8px 10px;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--toolbar-border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  flex-direction: column;
+  gap: 0;
+}
+
+.grid-menu-dropdown.grid-menu-open {
+  display: flex;
+}
+
+.grid-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-fg);
+  user-select: none;
+  padding-bottom: 6px;
+}
+
+.grid-menu-item input[type='checkbox'] {
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.grid-menu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--toolbar-border);
+}
+
+.grid-menu-action-btn {
+  height: 26px;
+  padding: 0 8px;
+  background: var(--button-bg);
+  color: var(--button-fg);
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: 11px;
+  text-align: left;
+}
+
+.grid-menu-action-btn:hover:not(:disabled) {
+  background: var(--button-hover-bg);
+}
+
+.grid-menu-action-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 #column-picker-wrap {
   position: relative;
 }
@@ -234,6 +315,95 @@ html, body {
   --ag-font-size: 12px;
   --ag-row-height: 28px;
   --ag-header-height: 32px;
+}
+
+.ag-theme-alpine .jsonl-line-number-cell,
+.ag-theme-alpine-dark .jsonl-line-number-cell {
+  text-align: right;
+  color: var(--vscode-descriptionForeground, var(--ag-secondary-foreground-color));
+}
+
+.ag-theme-alpine .jsonl-lead-cell,
+.ag-theme-alpine-dark .jsonl-lead-cell {
+  position: relative;
+  overflow: visible;
+}
+
+.ag-theme-alpine .jsonl-lead-cell .ag-cell-wrapper,
+.ag-theme-alpine-dark .jsonl-lead-cell .ag-cell-wrapper {
+  height: 100%;
+  min-height: 0;
+}
+
+.jsonl-lead-cell-root {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  min-height: 0;
+}
+
+.jsonl-line-number-cell-inner .jsonl-line-no-value {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  text-align: right;
+  min-height: 0;
+  padding: 2px 4px 0 0;
+}
+
+.jsonl-selection-cell-root {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.jsonl-selection-checkbox-wrap {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.jsonl-selection-native-cb {
+  margin: 0;
+  cursor: pointer;
+}
+
+.jsonl-row-height-grip {
+  flex: 0 0 5px;
+  width: 100%;
+  cursor: row-resize;
+  user-select: none;
+  touch-action: none;
+  flex-shrink: 0;
+}
+
+.jsonl-row-height-grip:hover {
+  background: var(--vscode-focusBorder, rgba(120, 120, 120, 0.35));
+}
+
+/* Fallback 120px = WRAP_CELL_MAX_CONTENT_HEIGHT_PX; per-row override via getRowStyle (--jsonl-wrap-cell-value-max-h). */
+.ag-theme-alpine .jsonl-cell-wrap-scroll .ag-cell-wrapper,
+.ag-theme-alpine-dark .jsonl-cell-wrap-scroll .ag-cell-wrapper {
+  min-height: 0;
+}
+
+.ag-theme-alpine .jsonl-cell-wrap-scroll .ag-cell-value,
+.ag-theme-alpine-dark .jsonl-cell-wrap-scroll .ag-cell-value {
+  max-height: var(--jsonl-wrap-cell-value-max-h, 120px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  white-space: normal;
 }
 
 .ag-cell-inline-editing {
