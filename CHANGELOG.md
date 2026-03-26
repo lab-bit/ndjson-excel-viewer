@@ -2,19 +2,6 @@
 
 ## 0.3.1
 
-- Reissued the release as `0.3.1` so it can be published cleanly after the `v0.3.0` tag had already been created.
-- Expanded the changelog to document the actual end-user changes delivered in the 0.3.x release line instead of leaving only the package rename note.
-- No additional functional code changes were added beyond release metadata and documentation alignment.
-
-## 0.3.0
-
-### Changed
-
-- Extension name and package identity were finalized as **JSONL Excel Viewer**.
-- Marketplace/package ID was unified to `jsonl-excel-viewer`.
-- Internal module names and source files were renamed from `ndjson*` to `jsonl*` to match the new product naming.
-- `.ndjson` files remain supported as a legacy format, while `.jsonl` is now the primary format throughout the UI and documentation.
-
 ### Added
 
 - Search toolbar for JSONL data with:
@@ -40,7 +27,12 @@
 - Search results stay in sync after edits, undo, and redo by invalidating and rebuilding per-row search cache entries.
 - Bulk inline/flat subtable expansion is disabled automatically in large file mode to preserve rendering and scrolling responsiveness.
 - Toolbar and info bar behavior were refined to better surface active grid state and dataset size.
-- Tests were expanded for parser/serializer rename coverage, large-file mode rules, row-height resolution, wrapped-cell layout, and column-width validation.
+- Tests were expanded for large-file mode rules, row-height resolution, wrapped-cell layout, and column-width validation.
+
+
+## 0.3.0
+
+- Extension package name finalized as `jsonl-excel-viewer` (NDJSON deprecated in favor of JSONL).
 
 ## 0.2.0 - Rename to JSONL Excel Viewer
 
